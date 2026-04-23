@@ -20,6 +20,7 @@ import java.nio.channels.DatagramChannel
 class LocationVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile
     private var isRunning = false
     private var vpnThread: Thread? = null
 
@@ -83,6 +84,11 @@ class LocationVpnService : VpnService() {
                 .setMtu(1500)
                 .setBlocking(true)
                 .establish()
+
+            if (vpnInterface == null) {
+                stopSelf()
+                return
+            }
 
             isRunning = true
 
@@ -205,7 +211,12 @@ class LocationVpnService : VpnService() {
         } catch (_: Exception) {}
         vpnInterface = null
 
-        stopForeground(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         stopSelf()
     }
 
