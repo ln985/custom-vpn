@@ -11,7 +11,6 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <!-- 标题 -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -31,7 +30,6 @@
             android:gravity="center"
             android:layout_marginBottom="24dp" />
 
-        <!-- 当前位置卡片 -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -65,7 +63,6 @@
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
-        <!-- 操作按钮 -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSelectLocation"
             android:layout_width="match_parent"
@@ -75,10 +72,10 @@
             android:layout_marginBottom="10dp" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnToggleSpoof"
+            android:id="@+id/btnToggleVpn"
             android:layout_width="match_parent"
             android:layout_height="52dp"
-            android:text="▶️ 开启伪装"
+            android:text="▶️ 开启 VPN 伪装"
             android:textSize="15sp"
             app:backgroundTint="#4CAF50"
             android:layout_marginBottom="10dp" />
@@ -98,18 +95,8 @@
             android:layout_height="48dp"
             android:text="📢 公告"
             android:textSize="15sp"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_marginBottom="10dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSettings"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="⚙️ 模拟位置设置"
-            android:textSize="14sp"
             style="@style/Widget.MaterialComponents.Button.TextButton" />
 
-        <!-- 使用说明 -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -136,7 +123,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="1. 首次使用点击「模拟位置设置」\n2. 在开发者选项中选择本应用为模拟位置应用\n3. 点击「选择预设位置」选择目标位置\n4. 点击「开启伪装」生效\n5. 打开地图类应用即可看到伪装效果\n6. 不使用时点击「停止伪装」"
+                    android:text="1. 点击「选择预设位置」选择目标省/市/区\n2. 点击「开启 VPN 伪装」\n3. 系统弹出 VPN 权限请求，点击确定\n4. VPN 开启后自动拦截腾讯地图 API\n5. 打开地图类应用即可看到伪装效果\n6. 不使用时点击「停止伪装」"
                     android:textSize="13sp"
                     android:textColor="#1565C0"
                     android:lineSpacingExtra="4dp" />

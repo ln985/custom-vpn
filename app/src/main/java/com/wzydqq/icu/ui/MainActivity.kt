@@ -1,27 +1,39 @@
 package com.wzydqq.icu.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.wzydqq.icu.AnnouncementManager
 import com.wzydqq.icu.databinding.ActivityMainBinding
-import com.wzydqq.icu.injector.LocationSpoofManager
 import com.wzydqq.icu.location.LocationStore
+import com.wzydqq.icu.vpn.LocationVpnService
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var spoofManager: LocationSpoofManager
+    private var vpnActive = false
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            startVpnService()
+        } else {
+            Toast.makeText(this, "需要 VPN 权限才能使用位置伪装", Toast.LENGTH_LONG).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        spoofManager = LocationSpoofManager(this)
         setupUI()
         loadAnnouncement()
     }
@@ -29,7 +41,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateLocationDisplay()
-        updateSpoofStatus()
+        updateVpnStatus()
     }
 
     private fun setupUI() {
@@ -40,31 +52,36 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, LocationPickerActivity::class.java))
         }
 
-        // 开启/关闭伪装
-        binding.btnToggleSpoof.setOnClickListener {
-            if (spoofManager.isRunning()) {
-                spoofManager.stop()
+        // 开启/关闭 VPN 伪装
+        binding.btnToggleVpn.setOnClickListener {
+            if (vpnActive) {
+                LocationVpnService.stop(this)
+                vpnActive = false
                 Toast.makeText(this, "位置伪装已关闭", Toast.LENGTH_SHORT).show()
+                updateVpnStatus()
             } else {
                 if (!LocationStore.hasLocation(this)) {
                     Toast.makeText(this, "请先选择伪装位置", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                if (spoofManager.start()) {
-                    Toast.makeText(this, "位置伪装已开启", Toast.LENGTH_SHORT).show()
+
+                // 请求 VPN 权限
+                val vpnIntent = VpnService.prepare(this)
+                if (vpnIntent != null) {
+                    vpnPermissionLauncher.launch(vpnIntent)
                 } else {
-                    Toast.makeText(this, "开启失败，请检查模拟位置设置", Toast.LENGTH_LONG).show()
+                    startVpnService()
                 }
             }
-            updateSpoofStatus()
         }
 
         // 清除位置
         binding.btnClearLocation.setOnClickListener {
-            spoofManager.stop()
+            LocationVpnService.stop(this)
+            vpnActive = false
             LocationStore.clear(this)
             updateLocationDisplay()
-            updateSpoofStatus()
+            updateVpnStatus()
             Toast.makeText(this, "位置已清除", Toast.LENGTH_SHORT).show()
         }
 
@@ -72,16 +89,13 @@ class MainActivity : AppCompatActivity() {
         binding.btnAnnouncement.setOnClickListener {
             startActivity(Intent(this, AnnouncementActivity::class.java))
         }
+    }
 
-        // 设置引导
-        binding.btnSettings.setOnClickListener {
-            try {
-                // 打开开发者选项
-                startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
-            } catch (e: Exception) {
-                Toast.makeText(this, "请手动打开 开发者选项 → 选择模拟位置应用", Toast.LENGTH_LONG).show()
-            }
-        }
+    private fun startVpnService() {
+        LocationVpnService.start(this)
+        vpnActive = true
+        Toast.makeText(this, "位置伪装已开启 ✅", Toast.LENGTH_SHORT).show()
+        updateVpnStatus()
     }
 
     private fun updateLocationDisplay() {
@@ -100,20 +114,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateSpoofStatus() {
+    private fun updateVpnStatus() {
         val location = LocationStore.get(this)
-        if (spoofManager.isRunning()) {
-            binding.tvStatus.text = "✅ 位置伪装已开启"
+        if (vpnActive) {
+            binding.tvStatus.text = "✅ VPN 位置伪装已开启"
             binding.tvStatus.setTextColor(getColor(android.R.color.holo_green_dark))
-            binding.btnToggleSpoof.text = "⏹️ 停止伪装"
+            binding.btnToggleVpn.text = "⏹️ 停止伪装"
         } else if (location != null) {
-            binding.tvStatus.text = "⏸️ 位置伪装未开启"
+            binding.tvStatus.text = "⏸️ VPN 伪装未开启"
             binding.tvStatus.setTextColor(getColor(android.R.color.holo_orange_dark))
-            binding.btnToggleSpoof.text = "▶️ 开启伪装"
+            binding.btnToggleVpn.text = "▶️ 开启 VPN 伪装"
         } else {
             binding.tvStatus.text = "⚪ 未设置伪装位置"
             binding.tvStatus.setTextColor(getColor(android.R.color.darker_gray))
-            binding.btnToggleSpoof.text = "▶️ 开启伪装"
+            binding.btnToggleVpn.text = "▶️ 开启 VPN 伪装"
         }
     }
 
