@@ -1,70 +1,122 @@
 package com.wzydqq.icu.vpn
 
 import android.content.Context
+import android.util.Log
 import com.wzydqq.icu.location.LocationStore
+import com.wzydqq.icu.location.SelectedLocation
 import org.json.JSONObject
 import java.io.*
-import java.net.ServerSocket
 import java.net.Socket
-import java.nio.charset.Charset
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
 /**
- * 本地 HTTP 代理 - 拦截并修改腾讯地图 API 响应
+ * 本地代理 - 拦截 HTTP 请求，透传 HTTPS 请求
+ * HTTP (port 80): 拦截并修改响应
+ * HTTPS (port 443): 透传到真实服务器（不修改）
  */
 class LocalProxy(private val context: Context) {
 
     companion object {
-        private val TARGET_HOSTS = setOf(
-            "apis.map.qq.com"
-        )
-        private val TARGET_PATHS = setOf(
-            "/ws/geocoder/v1"
-        )
+        private const val TAG = "LocalProxy"
     }
 
     fun intercept(packet: IpPacket, outputStream: FileOutputStream) {
-        // 建立到目标服务器的连接
+        val isHttps = packet.destPort == 443
+        val realPort = packet.destPort
+
         val targetSocket = Socket()
         try {
-            targetSocket.connect(java.net.InetSocketAddress("apis.map.qq.com", 80), 10000)
+            targetSocket.connect(java.net.InetSocketAddress("apis.map.qq.com", realPort), 10000)
 
-            // 读取客户端请求
             val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
-            val requestText = String(payload, Charsets.UTF_8)
 
-            // 修改请求中的 location 参数
+            if (isHttps) {
+                // HTTPS: 直接透传，不修改
+                handlePassthrough(targetSocket, payload, packet, outputStream)
+            } else {
+                // HTTP: 拦截并修改
+                handleHttpIntercept(targetSocket, payload, packet, outputStream)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Intercept error: ${e.message}")
+        } finally {
+            try { targetSocket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun handleHttpIntercept(
+        targetSocket: Socket,
+        payload: ByteArray,
+        packet: IpPacket,
+        outputStream: FileOutputStream
+    ) {
+        try {
+            val requestText = String(payload, Charsets.UTF_8)
             val location = LocationStore.get(context)
+
             val modifiedRequest = if (location != null && requestText.contains("location=")) {
                 modifyRequestLocation(requestText, location.toLocationString())
             } else {
                 requestText
             }
 
-            // 转发请求到目标服务器
             val targetOut = targetSocket.getOutputStream()
             targetOut.write(modifiedRequest.toByteArray())
             targetOut.flush()
 
-            // 读取目标服务器响应
             val targetIn = targetSocket.getInputStream()
             val responseBytes = readHttpResponse(targetIn)
 
-            // 修改响应中的位置数据
             val modifiedResponse = if (location != null) {
                 modifyResponse(responseBytes, location)
             } else {
                 responseBytes
             }
 
-            // 构建 TCP 响应并写入 VPN 输出
             val tcpResponse = buildTcpResponse(packet, modifiedResponse)
             outputStream.write(tcpResponse)
-
         } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try { targetSocket.close() } catch (_: Exception) {}
+            Log.e(TAG, "HTTP intercept error: ${e.message}")
         }
+    }
+
+    private fun handlePassthrough(
+        targetSocket: Socket,
+        initialPayload: ByteArray,
+        packet: IpPacket,
+        outputStream: FileOutputStream
+    ) {
+        try {
+            // 发送初始数据到真实服务器
+            val targetOut = targetSocket.getOutputStream()
+            targetOut.write(initialPayload)
+            targetOut.flush()
+
+            // 读取响应
+            val targetIn = targetSocket.getInputStream()
+            val responseBytes = readRawResponse(targetIn)
+
+            // 构建 TCP 响应并写回 VPN
+            val tcpResponse = buildTcpResponse(packet, responseBytes)
+            outputStream.write(tcpResponse)
+        } catch (e: Exception) {
+            Log.e(TAG, "Passthrough error: ${e.message}")
+        }
+    }
+
+    private fun readRawResponse(input: InputStream): ByteArray {
+        val baos = ByteArrayOutputStream()
+        val buffer = ByteArray(4096)
+        try {
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                baos.write(buffer, 0, read)
+                if (baos.size() > 65536) break // 安全限制
+            }
+        } catch (_: Exception) {}
+        return baos.toByteArray()
     }
 
     private fun modifyRequestLocation(request: String, newLocation: String): String {
@@ -72,14 +124,12 @@ class LocalProxy(private val context: Context) {
         return if (regex.containsMatchIn(request)) {
             regex.replace(request, "location=$newLocation")
         } else {
-            // 在 URL 后添加 location 参数
             request.replaceFirst(Regex("(/ws/geocoder/v1\\?)"), "\$1location=$newLocation&")
         }
     }
 
-    private fun modifyResponse(responseBytes: ByteArray, location: com.wzydqq.icu.location.SelectedLocation): ByteArray {
+    private fun modifyResponse(responseBytes: ByteArray, location: SelectedLocation): ByteArray {
         try {
-            // 找到 JSON 响应体
             val responseStr = String(responseBytes, Charsets.UTF_8)
             val bodyStart = responseStr.indexOf("\r\n\r\n")
             if (bodyStart < 0) return responseBytes
@@ -87,20 +137,18 @@ class LocalProxy(private val context: Context) {
             val headers = responseStr.substring(0, bodyStart)
             var body = responseStr.substring(bodyStart + 4)
 
-            // 检查是否有 gzip 压缩
             val isGzip = headers.lowercase().contains("content-encoding: gzip")
             if (isGzip) {
                 try {
                     val compressed = body.toByteArray()
                     val bais = ByteArrayInputStream(compressed)
-                    val gzis = java.util.zip.GZIPInputStream(bais)
+                    val gzis = GZIPInputStream(bais)
                     body = gzis.readBytes().toString(Charsets.UTF_8)
                 } catch (e: Exception) {
                     return responseBytes
                 }
             }
 
-            // 修改 JSON 响应
             val json = JSONObject(body)
             val result = json.optJSONObject("result")
             if (result != null) {
@@ -131,9 +179,8 @@ class LocalProxy(private val context: Context) {
                     val normCity = normalizeSpecialRegionName(location.cityName)
                     val nameParts = mutableListOf(adInfo.optString("nation", "中国"))
                     nameParts.add(normProvince)
-                    // 港澳特别行政区：省=市时，跳过城市避免重复
                     if (!((normProvince == "香港特别行政区" || normProvince == "澳门特别行政区")
-                        && normProvince == normCity)) {
+                                && normProvince == normCity)) {
                         nameParts.add(normCity)
                     }
                     nameParts.add(location.districtName.trim())
@@ -144,16 +191,14 @@ class LocalProxy(private val context: Context) {
             val modifiedBody = json.toString()
             val bodyBytes = modifiedBody.toByteArray(Charsets.UTF_8)
 
-            // 更新 Content-Length
             val newHeaders = headers.replace(
                 Regex("Content-Length: \\d+", RegexOption.IGNORE_CASE),
                 "Content-Length: ${bodyBytes.size}"
             )
 
-            // 重新压缩
             val finalBody = if (isGzip) {
                 val baos = ByteArrayOutputStream()
-                java.util.zip.GZIPOutputStream(baos).use { it.write(bodyBytes) }
+                GZIPOutputStream(baos).use { it.write(bodyBytes) }
                 baos.toByteArray()
             } else {
                 bodyBytes
@@ -171,7 +216,6 @@ class LocalProxy(private val context: Context) {
         val buffer = ByteArray(4096)
         var totalRead = 0
 
-        // 读取 headers
         val headerBuilder = StringBuilder()
         var headerEnd = false
         val singleByte = ByteArray(1)
@@ -190,12 +234,10 @@ class LocalProxy(private val context: Context) {
 
         if (!headerEnd) return baos.toByteArray()
 
-        // 解析 Content-Length
         val contentLengthMatch = Regex("Content-Length: (\\d+)", RegexOption.IGNORE_CASE)
             .find(headerBuilder.toString())
         val contentLength = contentLengthMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
-        // 读取 body
         var bodyRead = 0
         while (bodyRead < contentLength) {
             val toRead = minOf(buffer.size, contentLength - bodyRead)
@@ -209,18 +251,15 @@ class LocalProxy(private val context: Context) {
     }
 
     private fun buildTcpResponse(packet: IpPacket, payload: ByteArray): ByteArray {
-        // 简化的 TCP 响应构建
         val ipHeader = packet.rawData.sliceArray(0 until packet.headerLength)
         val tcpHeader = ByteArray(20)
 
-        // 交换源和目标端口
         val srcPortOffset = packet.headerLength
         tcpHeader[0] = packet.rawData[srcPortOffset + 2]
         tcpHeader[1] = packet.rawData[srcPortOffset + 3]
         tcpHeader[2] = packet.rawData[srcPortOffset]
         tcpHeader[3] = packet.rawData[srcPortOffset + 1]
 
-        // Sequence number
         val ackNum = ((packet.rawData[srcPortOffset + 4].toInt() and 0xFF) shl 24) or
                 ((packet.rawData[srcPortOffset + 5].toInt() and 0xFF) shl 16) or
                 ((packet.rawData[srcPortOffset + 6].toInt() and 0xFF) shl 8) or
@@ -231,25 +270,19 @@ class LocalProxy(private val context: Context) {
         tcpHeader[6] = (seqNum shr 8).toByte()
         tcpHeader[7] = seqNum.toByte()
 
-        // ACK number
         tcpHeader[8] = packet.rawData[srcPortOffset + 4]
         tcpHeader[9] = packet.rawData[srcPortOffset + 5]
         tcpHeader[10] = packet.rawData[srcPortOffset + 6]
         tcpHeader[11] = packet.rawData[srcPortOffset + 7]
 
-        // Data offset (5 words = 20 bytes) + flags (ACK)
         tcpHeader[12] = 0x50
         tcpHeader[13] = 0x10 // ACK
-
-        // Window size
         tcpHeader[14] = 0xFF.toByte()
         tcpHeader[15] = 0xFF.toByte()
 
         val tcpPacket = tcpHeader + payload
 
-        // 更新 IP 头
         val responseIpHeader = ipHeader.clone()
-        // 交换 IP
         for (i in 12..15) {
             responseIpHeader[i] = ipHeader[i + 4]
             responseIpHeader[i + 4] = ipHeader[i]
@@ -274,7 +307,6 @@ class LocalProxy(private val context: Context) {
         val normProvince = normalizeSpecialRegionName(province)
         val normCity = normalizeSpecialRegionName(city)
         val normDistrict = district.trim()
-        // 港澳特别行政区：省=市时，只显示省+区，避免重复
         val parts = if ((normProvince == "香港特别行政区" || normProvince == "澳门特别行政区")
             && normProvince == normCity) {
             listOf(normProvince, normDistrict).filter { it.isNotEmpty() }
