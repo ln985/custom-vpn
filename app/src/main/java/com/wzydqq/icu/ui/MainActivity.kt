@@ -2,13 +2,13 @@ package com.wzydqq.icu.ui
 
 import android.app.Activity
 import android.content.Intent
-import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.wzydqq.icu.AnnouncementManager
+import android.net.VpnService
 import com.wzydqq.icu.databinding.ActivityMainBinding
 import com.wzydqq.icu.location.LocationStore
 import com.wzydqq.icu.vpn.LocationVpnService
@@ -33,7 +33,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         setupUI()
         loadAnnouncement()
     }
@@ -47,12 +46,10 @@ class MainActivity : AppCompatActivity() {
     private fun setupUI() {
         updateLocationDisplay()
 
-        // 选择位置
         binding.btnSelectLocation.setOnClickListener {
             startActivity(Intent(this, LocationPickerActivity::class.java))
         }
 
-        // 开启/关闭 VPN 伪装
         binding.btnToggleVpn.setOnClickListener {
             if (vpnActive) {
                 LocationVpnService.stop(this)
@@ -65,7 +62,6 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
-                // 请求 VPN 权限
                 val vpnIntent = VpnService.prepare(this)
                 if (vpnIntent != null) {
                     vpnPermissionLauncher.launch(vpnIntent)
@@ -75,7 +71,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 清除位置
         binding.btnClearLocation.setOnClickListener {
             LocationVpnService.stop(this)
             vpnActive = false
@@ -85,7 +80,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "位置已清除", Toast.LENGTH_SHORT).show()
         }
 
-        // 公告
         binding.btnAnnouncement.setOnClickListener {
             startActivity(Intent(this, AnnouncementActivity::class.java))
         }
@@ -139,11 +133,7 @@ class MainActivity : AppCompatActivity() {
                 if (config.forceUpdate && config.version.isNotEmpty()) {
                     val currentVersion = packageManager.getPackageInfo(packageName, 0).versionName
                     if (currentVersion != config.version) {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "有新版本 ${config.version} 可用",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        Toast.makeText(this@MainActivity, "有新版本 ${config.version} 可用", Toast.LENGTH_LONG).show()
                     }
                 }
             } else {
