@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#F5F5F5">
@@ -25,7 +26,7 @@
             android:id="@+id/tvStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="⚪ 位置伪装未开启"
+            android:text="⚪ 未设置伪装位置"
             android:textSize="14sp"
             android:gravity="center"
             android:layout_marginBottom="24dp" />
@@ -36,8 +37,7 @@
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
             app:cardCornerRadius="12dp"
-            app:cardElevation="4dp"
-            xmlns:app="http://schemas.android.com/apk/res-auto">
+            app:cardElevation="4dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -69,26 +69,44 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSelectLocation"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="52dp"
             android:text="🗺️ 选择预设位置"
-            android:textSize="16sp"
-            android:layout_marginBottom="12dp" />
+            android:textSize="15sp"
+            android:layout_marginBottom="10dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnToggleSpoof"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="▶️ 开启伪装"
+            android:textSize="15sp"
+            app:backgroundTint="#4CAF50"
+            android:layout_marginBottom="10dp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnClearLocation"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="52dp"
             android:text="🗑️ 清除伪装位置"
-            android:textSize="16sp"
+            android:textSize="15sp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="10dp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnAnnouncement"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="48dp"
             android:text="📢 公告"
-            android:textSize="16sp"
+            android:textSize="15sp"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_marginBottom="10dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSettings"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="⚙️ 模拟位置设置"
+            android:textSize="14sp"
             style="@style/Widget.MaterialComponents.Button.TextButton" />
 
         <!-- 使用说明 -->
@@ -98,8 +116,7 @@
             android:layout_marginTop="16dp"
             app:cardCornerRadius="12dp"
             app:cardElevation="2dp"
-            app:cardBackgroundColor="#E3F2FD"
-            xmlns:app="http://schemas.android.com/apk/res-auto">
+            app:cardBackgroundColor="#E3F2FD">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -110,7 +127,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="使用说明"
+                    android:text="📖 使用说明"
                     android:textSize="14sp"
                     android:textStyle="bold"
                     android:textColor="#1565C0"
@@ -119,7 +136,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="1. 点击「选择预设位置」选择要伪装的省/市/区\n2. 开启 VPN 服务后自动生效\n3. 腾讯地图接口将返回伪装后的位置信息\n4. 不使用时点击「清除伪装位置」"
+                    android:text="1. 首次使用点击「模拟位置设置」\n2. 在开发者选项中选择本应用为模拟位置应用\n3. 点击「选择预设位置」选择目标位置\n4. 点击「开启伪装」生效\n5. 打开地图类应用即可看到伪装效果\n6. 不使用时点击「停止伪装」"
                     android:textSize="13sp"
                     android:textColor="#1565C0"
                     android:lineSpacingExtra="4dp" />
