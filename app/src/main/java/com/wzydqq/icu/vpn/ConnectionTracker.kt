@@ -10,9 +10,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * TCP 连接追踪器 - 正确转发非目标 TCP 流量
- * 
- * 为每个 TCP 连接维护一个真实的 Socket，实现双向数据中继。
- * 解决原始 forwardPacket() 无法处理 TCP 的问题。
  */
 class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
 
@@ -34,53 +31,42 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
         val socket: Socket,
         val outputStream: OutputStream,
         val inputStream: InputStream,
-        var clientSeq: Long = 0,      // 客户端期望的下一个序列号
-        var serverSeq: Long = 0,      // 服务端期望的下一个序列号
+        var clientSeq: Long = 0,
+        var serverSeq: Long = 0,
         var established: Boolean = false,
         var closed: Boolean = false
     )
 
     private val connections = ConcurrentHashMap<ConnectionKey, TrackedConnection>()
 
-    /**
-     * 处理一个 TCP 包，返回需要写回 VPN 接口的响应包
-     */
-    fun processTcpPacket(packet: IpPacket, vpnOutputStream: java.io.FileOutputStream): List<ByteArray> {
+    fun processTcpPacket(packet: IpPacket, vpnOutputStream: java.io.FileOutputStream) {
         val key = ConnectionKey(packet.sourceIp, packet.sourcePort, packet.destIp, packet.destPort)
-        val responses = mutableListOf<ByteArray>()
 
         when {
             packet.isTcpSyn() && !packet.isTcpAck() -> {
-                // SYN 包：建立新连接
                 handleSyn(key, packet, vpnOutputStream)
             }
             packet.isTcpRst() -> {
-                // RST 包：关闭连接
                 handleRst(key)
             }
             packet.isTcpFin() -> {
-                // FIN 包：关闭连接
                 handleFin(key, packet, vpnOutputStream)
             }
             packet.isTcpAck() && packet.payloadLength > 0 -> {
-                // 带数据的 ACK 包：转发数据
                 handleData(key, packet, vpnOutputStream)
             }
             packet.isTcpAck() -> {
-                // 纯 ACK：更新序列号
                 val conn = connections[key]
-                if (conn != null) {
-                    conn.clientSeq = packet.getTcpSequenceNumber() + maxOf(packet.payloadLength, 1)
+                if (conn != null && conn.established) {
+                    conn.clientSeq = packet.getTcpSequenceNumber() + maxOf(packet.payloadLength, 0)
                 }
             }
         }
-
-        return responses
     }
 
     private fun handleSyn(key: ConnectionKey, packet: IpPacket, vpnOutputStream: java.io.FileOutputStream) {
-        // 如果已有连接，先清理
         connections[key]?.let { closeConnection(it) }
+        connections.remove(key)
 
         Thread {
             try {
@@ -89,21 +75,22 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                 socket.connect(InetSocketAddress(key.dstIp, key.dstPort), CONNECT_TIMEOUT_MS)
                 socket.soTimeout = READ_TIMEOUT_MS
 
+                val serverSeq = (System.currentTimeMillis() and 0xFFFFFFF).toLong()
+
                 val conn = TrackedConnection(
                     socket = socket,
                     outputStream = socket.getOutputStream(),
                     inputStream = socket.getInputStream(),
-                    clientSeq = packet.getTcpSequenceNumber() + 1, // SYN 消耗 1 个序列号
-                    serverSeq = 0
+                    clientSeq = packet.getTcpSequenceNumber() + 1,
+                    serverSeq = serverSeq + 1
                 )
-
                 connections[key] = conn
 
-                // 发送 SYN-ACK 回 VPN
+                // SYN-ACK
                 val synAck = buildTcpPacket(
                     srcIp = key.dstIp, srcPort = key.dstPort,
                     dstIp = key.srcIp, dstPort = key.srcPort,
-                    seqNum = 1000L, // 服务端初始序列号
+                    seqNum = serverSeq,
                     ackNum = conn.clientSeq,
                     flags = 0x12, // SYN + ACK
                     payload = ByteArray(0),
@@ -115,14 +102,10 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                 }
 
                 conn.established = true
-
-                // 启动接收线程：从真实服务器读取数据，写回 VPN
                 startReceiverThread(key, conn, vpnOutputStream, packet)
-
                 Log.d(TAG, "TCP connected: ${key.dstIp}:${key.dstPort}")
             } catch (e: Exception) {
                 Log.e(TAG, "TCP connect failed: ${key.dstIp}:${key.dstPort} - ${e.message}")
-                // 发送 RST
                 val rst = buildTcpPacket(
                     srcIp = key.dstIp, srcPort = key.dstPort,
                     dstIp = key.srcIp, dstPort = key.srcPort,
@@ -138,12 +121,16 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                     }
                 } catch (_: Exception) {}
             }
-        }.start()
+        }.apply {
+            name = "TCP-Connect-${key.dstIp}:${key.dstPort}"
+            isDaemon = true
+            start()
+        }
     }
 
     private fun handleData(key: ConnectionKey, packet: IpPacket, vpnOutputStream: java.io.FileOutputStream) {
         val conn = connections[key] ?: return
-        if (conn.closed) return
+        if (!conn.established || conn.closed) return
 
         try {
             val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
@@ -152,7 +139,7 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                 conn.outputStream.flush()
                 conn.clientSeq = packet.getTcpSequenceNumber() + payload.size
 
-                // 发送 ACK
+                // ACK
                 val ack = buildTcpPacket(
                     srcIp = key.dstIp, srcPort = key.dstPort,
                     dstIp = key.srcIp, dstPort = key.srcPort,
@@ -168,7 +155,7 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "TCP data send error: ${e.message}")
+            Log.e(TAG, "TCP data error: ${e.message}")
             closeConnection(conn)
             connections.remove(key)
         }
@@ -176,8 +163,6 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
 
     private fun handleFin(key: ConnectionKey, packet: IpPacket, vpnOutputStream: java.io.FileOutputStream) {
         val conn = connections[key]
-
-        // 发送 FIN-ACK
         val finAck = buildTcpPacket(
             srcIp = key.dstIp, srcPort = key.dstPort,
             dstIp = key.srcIp, dstPort = key.srcPort,
@@ -215,7 +200,6 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
     ) {
         Thread {
             val buffer = ByteArray(BUFFER_SIZE)
-            var seqCounter = 1001L
 
             try {
                 while (!conn.closed && !Thread.interrupted()) {
@@ -227,7 +211,7 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                     val tcpPacket = buildTcpPacket(
                         srcIp = key.dstIp, srcPort = key.dstPort,
                         dstIp = key.srcIp, dstPort = key.srcPort,
-                        seqNum = seqCounter,
+                        seqNum = conn.serverSeq,
                         ackNum = conn.clientSeq,
                         flags = 0x18, // PSH + ACK
                         payload = payload,
@@ -239,16 +223,14 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
                         vpnOutputStream.flush()
                     }
 
-                    seqCounter += bytesRead
-                    conn.serverSeq = seqCounter
+                    conn.serverSeq += bytesRead
                 }
             } catch (e: Exception) {
                 if (!conn.closed) {
-                    Log.d(TAG, "TCP receiver ended: ${key.dstIp}:${key.dstPort} - ${e.message}")
+                    Log.d(TAG, "TCP receiver ended: ${key.dstIp}:${key.dstPort}")
                 }
             } finally {
                 if (!conn.closed) {
-                    // 发送 FIN
                     try {
                         val fin = buildTcpPacket(
                             srcIp = key.dstIp, srcPort = key.dstPort,
@@ -282,7 +264,7 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
     }
 
     /**
-     * 构建 TCP 响应包（IP头 + TCP头 + payload）
+     * 构建 TCP 包（IP头 + TCP头 + payload），带正确的校验和
      */
     private fun buildTcpPacket(
         srcIp: String, srcPort: Int,
@@ -292,7 +274,7 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
         payload: ByteArray,
         originalPacket: IpPacket
     ): ByteArray {
-        // TCP 头部 (20 bytes, no options)
+        // TCP 头部 (20 bytes)
         val tcpHeader = ByteArray(20)
         tcpHeader[0] = (srcPort shr 8).toByte()
         tcpHeader[1] = srcPort.toByte()
@@ -308,60 +290,91 @@ class ConnectionTracker(private val protectSocket: (Socket) -> Boolean) {
         tcpHeader[11] = ackNum.toByte()
         tcpHeader[12] = 0x50.toByte() // Data offset: 5 (20 bytes)
         tcpHeader[13] = flags.toByte()
-        tcpHeader[14] = 0xFF.toByte() // Window size
+        tcpHeader[14] = 0xFF.toByte() // Window
         tcpHeader[15] = 0xFF.toByte()
-        // Checksum (16-17) 和 Urgent pointer (18-19) 设为 0
+        tcpHeader[16] = 0 // Checksum placeholder
+        tcpHeader[17] = 0
+        tcpHeader[18] = 0 // Urgent pointer
+        tcpHeader[19] = 0
+
+        // 计算 TCP 校验和（需要伪头部）
+        val srcParts = srcIp.split(".").map { it.toInt() }
+        val dstParts = dstIp.split(".").map { it.toInt() }
+
+        val tcpLength = tcpHeader.size + payload.size
+        val pseudoHeader = ByteArray(12)
+        pseudoHeader[0] = srcParts[0].toByte()
+        pseudoHeader[1] = srcParts[1].toByte()
+        pseudoHeader[2] = srcParts[2].toByte()
+        pseudoHeader[3] = srcParts[3].toByte()
+        pseudoHeader[4] = dstParts[0].toByte()
+        pseudoHeader[5] = dstParts[1].toByte()
+        pseudoHeader[6] = dstParts[2].toByte()
+        pseudoHeader[7] = dstParts[3].toByte()
+        pseudoHeader[8] = 0
+        pseudoHeader[9] = 6 // TCP protocol
+        pseudoHeader[10] = (tcpLength shr 8).toByte()
+        pseudoHeader[11] = tcpLength.toByte()
+
+        val tcpChecksum = computeChecksum(pseudoHeader + tcpHeader + payload)
+        tcpHeader[16] = (tcpChecksum shr 8).toByte()
+        tcpHeader[17] = tcpChecksum.toByte()
 
         val tcpPacket = tcpHeader + payload
 
-        // IP 头部
+        // IP 头部 (20 bytes)
         val ipHeader = ByteArray(20)
-        ipHeader[0] = 0x45 // Version 4, IHL 5
-        ipHeader[1] = 0    // DSCP/ECN
+        ipHeader[0] = 0x45
+        ipHeader[1] = 0
         val totalLength = 20 + tcpPacket.size
         ipHeader[2] = (totalLength shr 8).toByte()
         ipHeader[3] = totalLength.toByte()
-        ipHeader[4] = 0    // Identification
+        ipHeader[4] = 0 // ID
         ipHeader[5] = 0
         ipHeader[6] = 0x40 // Don't fragment
         ipHeader[7] = 0
-        ipHeader[8] = 64   // TTL
-        ipHeader[9] = 6    // Protocol: TCP
-        ipHeader[10] = 0   // Checksum
+        ipHeader[8] = 64 // TTL
+        ipHeader[9] = 6 // TCP
+        ipHeader[10] = 0 // Checksum placeholder
         ipHeader[11] = 0
+        ipHeader[12] = srcParts[0].toByte()
+        ipHeader[13] = srcParts[1].toByte()
+        ipHeader[14] = srcParts[2].toByte()
+        ipHeader[15] = srcParts[3].toByte()
+        ipHeader[16] = dstParts[0].toByte()
+        ipHeader[17] = dstParts[1].toByte()
+        ipHeader[18] = dstParts[2].toByte()
+        ipHeader[19] = dstParts[3].toByte()
 
-        // Source IP
-        val srcParts = srcIp.split(".")
-        ipHeader[12] = srcParts[0].toInt().toByte()
-        ipHeader[13] = srcParts[1].toInt().toByte()
-        ipHeader[14] = srcParts[2].toInt().toByte()
-        ipHeader[15] = srcParts[3].toInt().toByte()
-
-        // Dest IP
-        val dstParts = dstIp.split(".")
-        ipHeader[16] = dstParts[0].toInt().toByte()
-        ipHeader[17] = dstParts[1].toInt().toByte()
-        ipHeader[18] = dstParts[2].toInt().toByte()
-        ipHeader[19] = dstParts[3].toInt().toByte()
+        // 计算 IP 校验和
+        val ipChecksum = computeChecksum(ipHeader)
+        ipHeader[10] = (ipChecksum shr 8).toByte()
+        ipHeader[11] = ipChecksum.toByte()
 
         return ipHeader + tcpPacket
     }
 
     /**
-     * 清理所有连接
+     * RFC 1071 校验和算法
      */
+    private fun computeChecksum(data: ByteArray): Int {
+        var sum = 0L
+        var i = 0
+        while (i < data.size - 1) {
+            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+        }
+        if (i < data.size) {
+            sum += (data[i].toInt() and 0xFF) shl 8
+        }
+        while (sum shr 16 != 0L) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        return (sum.toInt().inv() and 0xFFFF)
+    }
+
     fun shutdown() {
         connections.values.forEach { closeConnection(it) }
         connections.clear()
-    }
-
-    /**
-     * 清理超时连接
-     */
-    fun cleanupStale() {
-        val staleKeys = connections.entries
-            .filter { it.value.closed }
-            .map { it.key }
-        staleKeys.forEach { connections.remove(it) }
     }
 }

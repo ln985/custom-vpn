@@ -200,6 +200,38 @@ class IpPacket(
         ipHeader[10] = 0
         ipHeader[11] = 0
 
+        // UDP 校验和
+        val srcIpStr = "${ipHeader[12].toInt() and 0xFF}.${ipHeader[13].toInt() and 0xFF}.${ipHeader[14].toInt() and 0xFF}.${ipHeader[15].toInt() and 0xFF}"
+        val dstIpStr = "${ipHeader[16].toInt() and 0xFF}.${ipHeader[17].toInt() and 0xFF}.${ipHeader[18].toInt() and 0xFF}.${ipHeader[19].toInt() and 0xFF}"
+        val sp = srcIpStr.split(".").map { it.toInt() }
+        val dp = dstIpStr.split(".").map { it.toInt() }
+        val ph = ByteArray(12)
+        ph[0] = sp[0].toByte(); ph[1] = sp[1].toByte(); ph[2] = sp[2].toByte(); ph[3] = sp[3].toByte()
+        ph[4] = dp[0].toByte(); ph[5] = dp[1].toByte(); ph[6] = dp[2].toByte(); ph[7] = dp[3].toByte()
+        ph[8] = 0; ph[9] = 17
+        val uLen = udpPacket.size
+        ph[10] = (uLen shr 8).toByte(); ph[11] = uLen.toByte()
+        val udpCksum = checksumBytes(ph + udpPacket)
+        udpHeader[6] = (udpCksum shr 8).toByte()
+        udpHeader[7] = udpCksum.toByte()
+
+        // IP 校验和
+        val ipCksum = checksumBytes(ipHeader)
+        ipHeader[10] = (ipCksum shr 8).toByte()
+        ipHeader[11] = ipCksum.toByte()
+
         return ipHeader + udpPacket
+    }
+
+    private fun checksumBytes(data: ByteArray): Int {
+        var sum = 0L
+        var i = 0
+        while (i < data.size - 1) {
+            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+        }
+        if (i < data.size) sum += (data[i].toInt() and 0xFF) shl 8
+        while (sum shr 16 != 0L) sum = (sum and 0xFFFF) + (sum shr 16)
+        return (sum.toInt().inv() and 0xFFFF)
     }
 }

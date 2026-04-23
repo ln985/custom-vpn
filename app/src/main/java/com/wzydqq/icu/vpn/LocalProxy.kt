@@ -275,6 +275,7 @@ class LocalProxy(private val context: Context) {
         val tcpHeader = ByteArray(20)
 
         val srcPortOffset = packet.headerLength
+        // 交换源/目标端口
         tcpHeader[0] = packet.rawData[srcPortOffset + 2]
         tcpHeader[1] = packet.rawData[srcPortOffset + 3]
         tcpHeader[2] = packet.rawData[srcPortOffset]
@@ -299,19 +300,64 @@ class LocalProxy(private val context: Context) {
         tcpHeader[13] = 0x18 // PSH + ACK
         tcpHeader[14] = 0xFF.toByte()
         tcpHeader[15] = 0xFF.toByte()
+        tcpHeader[16] = 0 // Checksum placeholder
+        tcpHeader[17] = 0
+        tcpHeader[18] = 0
+        tcpHeader[19] = 0
 
-        val tcpPacket = tcpHeader + payload
-
+        // 交换源/目标 IP
         val responseIpHeader = ipHeader.clone()
         for (i in 12..15) {
             responseIpHeader[i] = ipHeader[i + 4]
             responseIpHeader[i + 4] = ipHeader[i]
         }
+
+        // TCP 校验和（伪头部）
+        val srcIp = "${responseIpHeader[12].toInt() and 0xFF}.${responseIpHeader[13].toInt() and 0xFF}.${responseIpHeader[14].toInt() and 0xFF}.${responseIpHeader[15].toInt() and 0xFF}"
+        val dstIp = "${responseIpHeader[16].toInt() and 0xFF}.${responseIpHeader[17].toInt() and 0xFF}.${responseIpHeader[18].toInt() and 0xFF}.${responseIpHeader[19].toInt() and 0xFF}"
+        val srcParts = srcIp.split(".").map { it.toInt() }
+        val dstParts = dstIp.split(".").map { it.toInt() }
+        val tcpLength = tcpHeader.size + payload.size
+        val pseudoHeader = ByteArray(12)
+        pseudoHeader[0] = srcParts[0].toByte(); pseudoHeader[1] = srcParts[1].toByte()
+        pseudoHeader[2] = srcParts[2].toByte(); pseudoHeader[3] = srcParts[3].toByte()
+        pseudoHeader[4] = dstParts[0].toByte(); pseudoHeader[5] = dstParts[1].toByte()
+        pseudoHeader[6] = dstParts[2].toByte(); pseudoHeader[7] = dstParts[3].toByte()
+        pseudoHeader[8] = 0; pseudoHeader[9] = 6
+        pseudoHeader[10] = (tcpLength shr 8).toByte(); pseudoHeader[11] = tcpLength.toByte()
+        val tcpChecksum = computeChecksum(pseudoHeader + tcpHeader + payload)
+        tcpHeader[16] = (tcpChecksum shr 8).toByte()
+        tcpHeader[17] = tcpChecksum.toByte()
+
+        val tcpPacket = tcpHeader + payload
+
         val totalLength = packet.headerLength + tcpPacket.size
         responseIpHeader[2] = (totalLength shr 8).toByte()
         responseIpHeader[3] = totalLength.toByte()
+        responseIpHeader[10] = 0
+        responseIpHeader[11] = 0
+        // IP 校验和
+        val ipChecksum = computeChecksum(responseIpHeader)
+        responseIpHeader[10] = (ipChecksum shr 8).toByte()
+        responseIpHeader[11] = ipChecksum.toByte()
 
         return responseIpHeader + tcpPacket
+    }
+
+    private fun computeChecksum(data: ByteArray): Int {
+        var sum = 0L
+        var i = 0
+        while (i < data.size - 1) {
+            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+        }
+        if (i < data.size) {
+            sum += (data[i].toInt() and 0xFF) shl 8
+        }
+        while (sum shr 16 != 0L) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        return (sum.toInt().inv() and 0xFFFF)
     }
 
     private fun normalizeSpecialRegionName(name: String): String {

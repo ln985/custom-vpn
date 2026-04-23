@@ -8,9 +8,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * UDP 中继器 - 正确转发非 DNS 的 UDP 流量
- * 
- * 为每个 UDP "连接"（源端口+目标端口）维护一个 DatagramChannel，
- * 实现双向数据中继。解决原始 forwardPacket() 无法处理 UDP 的问题。
  */
 class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
 
@@ -33,14 +30,9 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
     )
 
     private val sessions = ConcurrentHashMap<UdpKey, UdpSession>()
+    private val activeReceivers = ConcurrentHashMap<UdpKey, Boolean>()
 
-    /**
-     * 处理一个 UDP 包，返回需要写回 VPN 接口的响应包列表
-     */
-    fun processUdpPacket(
-        packet: IpPacket,
-        vpnOutputStream: java.io.FileOutputStream
-    ) {
+    fun processUdpPacket(packet: IpPacket, vpnOutputStream: java.io.FileOutputStream) {
         val key = UdpKey(packet.sourceIp, packet.sourcePort, packet.destIp, packet.destPort)
         val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
 
@@ -53,11 +45,8 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
         session.lastActive = System.currentTimeMillis()
 
         try {
-            // 发送到真实目标
             val buffer = ByteBuffer.wrap(payload)
             session.channel.send(buffer, session.remoteAddress)
-
-            // 启动接收（如果还没启动）
             startReceiverIfNeeded(key, session, vpnOutputStream, packet)
         } catch (e: Exception) {
             Log.e(TAG, "UDP send error: ${e.message}")
@@ -73,19 +62,15 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
             channel.configureBlocking(false)
             channel.socket().soTimeout = 0
 
-            val remoteAddress = InetSocketAddress(key.dstIp, key.dstPort)
-
             UdpSession(
                 channel = channel,
-                remoteAddress = remoteAddress
+                remoteAddress = InetSocketAddress(key.dstIp, key.dstPort)
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create UDP session: ${e.message}")
             null
         }
     }
-
-    private val activeReceivers = ConcurrentHashMap<UdpKey, Boolean>()
 
     private fun startReceiverIfNeeded(
         key: UdpKey,
@@ -109,7 +94,6 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
                         buffer.get(responseData)
 
                         if (responseData.isNotEmpty()) {
-                            // 构建 UDP 响应包写回 VPN
                             val responsePacket = buildUdpResponse(
                                 srcIp = key.dstIp, srcPort = key.dstPort,
                                 dstIp = key.srcIp, dstPort = key.srcPort,
@@ -121,17 +105,12 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
                                 vpnOutputStream.flush()
                             }
                         }
-
                         session.lastActive = System.currentTimeMillis()
                     } else {
-                        // 没有数据，短暂休眠避免忙等
                         Thread.sleep(5)
                     }
 
-                    // 检查超时
-                    if (System.currentTimeMillis() - session.lastActive > TIMEOUT_MS) {
-                        break
-                    }
+                    if (System.currentTimeMillis() - session.lastActive > TIMEOUT_MS) break
                 }
             } catch (e: Exception) {
                 if (!Thread.interrupted()) {
@@ -155,6 +134,9 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
         payload: ByteArray,
         originalPacket: IpPacket
     ): ByteArray {
+        val srcParts = srcIp.split(".").map { it.toInt() }
+        val dstParts = dstIp.split(".").map { it.toInt() }
+
         // UDP 头部
         val udpHeader = ByteArray(8)
         udpHeader[0] = (srcPort shr 8).toByte()
@@ -164,9 +146,27 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
         val udpLength = payload.size + 8
         udpHeader[4] = (udpLength shr 8).toByte()
         udpHeader[5] = udpLength.toByte()
-        // Checksum 留空
-        udpHeader[6] = 0
+        udpHeader[6] = 0 // Checksum placeholder
         udpHeader[7] = 0
+
+        // 计算 UDP 校验和（伪头部）
+        val pseudoHeader = ByteArray(12)
+        pseudoHeader[0] = srcParts[0].toByte()
+        pseudoHeader[1] = srcParts[1].toByte()
+        pseudoHeader[2] = srcParts[2].toByte()
+        pseudoHeader[3] = srcParts[3].toByte()
+        pseudoHeader[4] = dstParts[0].toByte()
+        pseudoHeader[5] = dstParts[1].toByte()
+        pseudoHeader[6] = dstParts[2].toByte()
+        pseudoHeader[7] = dstParts[3].toByte()
+        pseudoHeader[8] = 0
+        pseudoHeader[9] = 17 // UDP protocol
+        pseudoHeader[10] = (udpLength shr 8).toByte()
+        pseudoHeader[11] = udpLength.toByte()
+
+        val udpChecksum = computeChecksum(pseudoHeader + udpHeader + payload)
+        udpHeader[6] = (udpChecksum shr 8).toByte()
+        udpHeader[7] = udpChecksum.toByte()
 
         val udpPacket = udpHeader + payload
 
@@ -182,44 +182,44 @@ class UdpRelay(private val protectChannel: (DatagramChannel) -> Boolean) {
         ipHeader[6] = 0x40
         ipHeader[7] = 0
         ipHeader[8] = 64
-        ipHeader[9] = 17 // Protocol: UDP
+        ipHeader[9] = 17 // UDP
         ipHeader[10] = 0
         ipHeader[11] = 0
+        ipHeader[12] = srcParts[0].toByte()
+        ipHeader[13] = srcParts[1].toByte()
+        ipHeader[14] = srcParts[2].toByte()
+        ipHeader[15] = srcParts[3].toByte()
+        ipHeader[16] = dstParts[0].toByte()
+        ipHeader[17] = dstParts[1].toByte()
+        ipHeader[18] = dstParts[2].toByte()
+        ipHeader[19] = dstParts[3].toByte()
 
-        val srcParts = srcIp.split(".")
-        ipHeader[12] = srcParts[0].toInt().toByte()
-        ipHeader[13] = srcParts[1].toInt().toByte()
-        ipHeader[14] = srcParts[2].toInt().toByte()
-        ipHeader[15] = srcParts[3].toInt().toByte()
-
-        val dstParts = dstIp.split(".")
-        ipHeader[16] = dstParts[0].toInt().toByte()
-        ipHeader[17] = dstParts[1].toInt().toByte()
-        ipHeader[18] = dstParts[2].toInt().toByte()
-        ipHeader[19] = dstParts[3].toInt().toByte()
+        val ipChecksum = computeChecksum(ipHeader)
+        ipHeader[10] = (ipChecksum shr 8).toByte()
+        ipHeader[11] = ipChecksum.toByte()
 
         return ipHeader + udpPacket
     }
 
-    /**
-     * 清理所有会话
-     */
+    private fun computeChecksum(data: ByteArray): Int {
+        var sum = 0L
+        var i = 0
+        while (i < data.size - 1) {
+            sum += ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+        }
+        if (i < data.size) {
+            sum += (data[i].toInt() and 0xFF) shl 8
+        }
+        while (sum shr 16 != 0L) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        return (sum.toInt().inv() and 0xFFFF)
+    }
+
     fun shutdown() {
         sessions.values.forEach { try { it.channel.close() } catch (_: Exception) {} }
         sessions.clear()
         activeReceivers.clear()
-    }
-
-    /**
-     * 清理超时会话
-     */
-    fun cleanupStale() {
-        val now = System.currentTimeMillis()
-        val staleKeys = sessions.entries
-            .filter { now - it.value.lastActive > TIMEOUT_MS }
-            .map { it.key }
-        staleKeys.forEach { key ->
-            sessions.remove(key)?.let { try { it.channel.close() } catch (_: Exception) {} }
-        }
     }
 }
