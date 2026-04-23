@@ -2,13 +2,10 @@ package com.wzydqq.icu.vpn
 
 import java.nio.ByteBuffer
 
-/**
- * 简化的 IP 数据包解析器
- */
 class IpPacket(
     val version: Int,
     val headerLength: Int,
-    val protocol: Int, // 6=TCP, 17=UDP
+    val protocol: Int,
     val sourceIp: String,
     val destIp: String,
     val sourcePort: Int,
@@ -30,7 +27,7 @@ class IpPacket(
                 if (data.size < 20) return null
 
                 val version = (data[0].toInt() and 0xF0) shr 4
-                if (version != 4) return null // 只处理 IPv4
+                if (version != 4) return null
 
                 val headerLength = (data[0].toInt() and 0x0F) * 4
                 val protocol = data[9].toInt() and 0xFF
@@ -78,7 +75,14 @@ class IpPacket(
 
     fun isDnsQuery(): Boolean = protocol == PROTOCOL_UDP && destPort == 53
 
-    fun isTcpToTarget(): Boolean = protocol == PROTOCOL_TCP && destPort == 80
+    // 拦截到 apis.map.qq.com 的 HTTP (80) 和 HTTPS (443)
+    fun isTcpToTarget(): Boolean = protocol == PROTOCOL_TCP && (destPort == 80 || destPort == 443)
+
+    fun isTcpSyn(): Boolean {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 14) return false
+        val flags = rawData[headerLength + 13].toInt() and 0x3F
+        return (flags and 0x02) != 0 && (flags and 0x10) == 0 // SYN set, ACK not set
+    }
 
     fun extractDnsQuery(): String? {
         if (!isDnsQuery() || payloadLength < 12) return null
@@ -86,7 +90,7 @@ class IpPacket(
         try {
             val payload = rawData.sliceArray(payloadOffset until rawData.size)
             val sb = StringBuilder()
-            var i = 12 // Skip DNS header
+            var i = 12
 
             while (i < payload.size) {
                 val len = payload[i].toInt() and 0xFF
@@ -110,45 +114,34 @@ class IpPacket(
         val payload = rawData.sliceArray(payloadOffset until rawData.size)
         val response = payload.copyOf()
 
-        // 设置 QR 位（响应）
         response[2] = (response[2].toInt() or 0x80).toByte()
-        // 设置 RCODE = 0 (No Error)
         response[3] = (response[3].toInt() and 0xF0).toByte()
-        // ANCOUNT = 1
         response[6] = 0
         response[7] = 1
 
-        // 追加回答记录
         val answer = mutableListOf<Byte>()
-        // NAME (指针指向查询)
         answer.add(0xC0.toByte())
         answer.add(0x0C)
-        // TYPE A
         answer.add(0)
         answer.add(1)
-        // CLASS IN
         answer.add(0)
         answer.add(1)
-        // TTL 60s
         answer.add(0)
         answer.add(0)
         answer.add(0)
         answer.add(60)
-        // RDLENGTH
         answer.add(0)
         answer.add(4)
-        // RDATA
         for (octet in ip.split(".")) {
             answer.add(octet.toInt().toByte())
         }
 
         val fullResponse = response + answer.toByteArray()
 
-        // 构建 UDP 响应
         val udpHeader = ByteArray(8)
-        udpHeader[0] = rawData[headerLength + 2] // 源端口 = 目标端口
+        udpHeader[0] = rawData[headerLength + 2]
         udpHeader[1] = rawData[headerLength + 3]
-        udpHeader[2] = rawData[headerLength] // 目标端口 = 源端口
+        udpHeader[2] = rawData[headerLength]
         udpHeader[3] = rawData[headerLength + 1]
         val udpLength = fullResponse.size + 8
         udpHeader[4] = (udpLength shr 8).toByte()
@@ -156,18 +149,14 @@ class IpPacket(
 
         val udpPacket = udpHeader + fullResponse
 
-        // 构建 IP 响应
         val ipHeader = rawData.sliceArray(0 until headerLength)
-        // 交换源和目标 IP
         for (i in 12..15) {
             ipHeader[i] = rawData[i + 4]
             ipHeader[i + 4] = rawData[i]
         }
-        // 更新总长度
         val totalLength = headerLength + udpPacket.size
         ipHeader[2] = (totalLength shr 8).toByte()
         ipHeader[3] = totalLength.toByte()
-        // 清零校验和
         ipHeader[10] = 0
         ipHeader[11] = 0
 
