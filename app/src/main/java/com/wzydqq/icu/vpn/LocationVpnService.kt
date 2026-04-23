@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.wzydqq.icu.location.LocationStore
 import com.wzydqq.icu.ui.MainActivity
 import java.io.FileInputStream
@@ -23,8 +24,11 @@ class LocationVpnService : VpnService() {
     @Volatile
     private var isRunning = false
     private var vpnThread: Thread? = null
+    private var connectionTracker: ConnectionTracker? = null
+    private var udpRelay: UdpRelay? = null
 
     companion object {
+        private const val TAG = "LocationVpnService"
         const val ACTION_START = "com.wzydqq.icu.vpn.START"
         const val ACTION_STOP = "com.wzydqq.icu.vpn.STOP"
         const val CHANNEL_ID = "location_vpn_channel"
@@ -74,7 +78,6 @@ class LocationVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, createNotification())
 
         try {
-            // 建立 VPN 接口
             vpnInterface = Builder()
                 .setSession("位置助手")
                 .addAddress("10.0.0.2", 32)
@@ -92,14 +95,24 @@ class LocationVpnService : VpnService() {
 
             isRunning = true
 
-            // 启动数据包处理线程
+            // 初始化连接追踪器和 UDP 中继器
+            connectionTracker = ConnectionTracker { socket ->
+                protect(socket)
+                true
+            }
+            udpRelay = UdpRelay { channel ->
+                protect(channel.socket())
+                true
+            }
+
             vpnThread = Thread { processPackets() }.apply {
                 name = "VPN-Thread"
                 start()
             }
 
+            Log.d(TAG, "VPN started")
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "VPN start failed: ${e.message}")
             stopVpn()
         }
     }
@@ -110,24 +123,17 @@ class LocationVpnService : VpnService() {
         val outputStream = FileOutputStream(fd.fileDescriptor)
         val buffer = ByteBuffer.allocate(32767)
 
-        // 连接到远程 DNS 代理
-        val channel = DatagramChannel.open()
-        protect(channel.socket())
-        channel.connect(InetSocketAddress("8.8.8.8", 53))
-
         try {
             while (isRunning) {
-                // 从 VPN 接口读取数据包
                 val length = inputStream.read(buffer.array())
                 if (length <= 0) {
-                    Thread.sleep(10)
+                    Thread.sleep(5)
                     continue
                 }
 
                 buffer.limit(length)
                 buffer.position(0)
 
-                // 解析 IP 包
                 val packet = try {
                     IpPacket.parse(buffer)
                 } catch (e: Exception) {
@@ -135,19 +141,26 @@ class LocationVpnService : VpnService() {
                 }
 
                 if (packet != null) {
-                    // 只处理 DNS 查询和到目标服务器的 TCP
                     when {
+                        // DNS 查询：只劫持 apis.map.qq.com
                         packet.isDnsQuery() -> {
-                            // 转发 DNS 查询并可能修改响应
-                            handleDns(packet, channel, outputStream)
+                            handleDns(packet, outputStream)
                         }
+                        // TCP 到目标（10.0.0.2 = 被 DNS 劫持的 apis.map.qq.com）
                         packet.isTcpToTarget() -> {
-                            // 拦截到腾讯地图 API 的 TCP 连接
                             handleTcpIntercept(packet, outputStream)
                         }
+                        // TCP 到其他地址：通过连接追踪器正确转发
+                        packet.protocol == IpPacket.PROTOCOL_TCP -> {
+                            connectionTracker?.processTcpPacket(packet, outputStream)
+                        }
+                        // UDP 到其他地址（非 DNS）：通过 UDP 中继器转发
+                        packet.protocol == IpPacket.PROTOCOL_UDP -> {
+                            udpRelay?.processUdpPacket(packet, outputStream)
+                        }
+                        // ICMP 等其他协议：静默丢弃（无法转发）
                         else -> {
-                            // 其他流量直接转发
-                            forwardPacket(packet, channel, outputStream)
+                            // 不处理
                         }
                     }
                 }
@@ -155,49 +168,51 @@ class LocationVpnService : VpnService() {
                 buffer.clear()
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (isRunning) {
+                Log.e(TAG, "Packet processing error: ${e.message}")
+            }
         } finally {
-            try { channel.close() } catch (_: Exception) {}
+            connectionTracker?.shutdown()
+            udpRelay?.shutdown()
         }
     }
 
-    private fun handleDns(packet: IpPacket, channel: DatagramChannel, outputStream: FileOutputStream) {
-        // 检查是否是目标域名的 DNS 查询
+    /**
+     * 处理 DNS 查询
+     * 只劫持 apis.map.qq.com 的查询，其他 DNS 正常转发
+     */
+    private fun handleDns(packet: IpPacket, outputStream: FileOutputStream) {
         val domain = packet.extractDnsQuery()
+
         if (domain != null && domain.contains("apis.map.qq.com")) {
-            // 返回本地地址，让请求走我们的拦截器
+            // 返回本地地址，让 HTTP 请求走我们的拦截器
             val response = packet.buildDnsResponse(domain, "10.0.0.2")
-            outputStream.write(response)
+            synchronized(outputStream) {
+                outputStream.write(response)
+                outputStream.flush()
+            }
+            Log.d(TAG, "DNS hijack: $domain -> 10.0.0.2")
         } else {
-            // 其他 DNS 查询直接转发
-            forwardPacket(packet, channel, outputStream)
+            // 其他 DNS 查询通过 UDP 中继正常转发
+            udpRelay?.processUdpPacket(packet, outputStream)
         }
     }
 
+    /**
+     * 处理到 apis.map.qq.com (10.0.0.2) 的 TCP 拦截
+     * 只处理 HTTP (port 80) 的拦截修改，HTTPS 直接透传
+     */
     private fun handleTcpIntercept(packet: IpPacket, outputStream: FileOutputStream) {
-        // 通过本地代理处理 TCP 连接
-        // 这里会修改腾讯地图 API 的响应
         Thread {
             try {
                 val proxy = LocalProxy(this)
                 proxy.intercept(packet, outputStream)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "TCP intercept error: ${e.message}")
             }
-        }.start()
-    }
-
-    private fun forwardPacket(packet: IpPacket, channel: DatagramChannel, outputStream: FileOutputStream) {
-        try {
-            val buffer = ByteBuffer.wrap(packet.rawData)
-            channel.write(buffer)
-
-            buffer.clear()
-            channel.read(buffer)
-
-            outputStream.write(buffer.array(), 0, buffer.position())
-        } catch (e: Exception) {
-            // Ignore forwarding errors
+        }.apply {
+            name = "TCP-Intercept-${packet.sourcePort}"
+            start()
         }
     }
 
@@ -205,6 +220,11 @@ class LocationVpnService : VpnService() {
         isRunning = false
         vpnThread?.interrupt()
         vpnThread = null
+
+        connectionTracker?.shutdown()
+        connectionTracker = null
+        udpRelay?.shutdown()
+        udpRelay = null
 
         try {
             vpnInterface?.close()
@@ -218,6 +238,7 @@ class LocationVpnService : VpnService() {
             stopForeground(true)
         }
         stopSelf()
+        Log.d(TAG, "VPN stopped")
     }
 
     override fun onDestroy() {

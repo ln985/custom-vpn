@@ -12,46 +12,50 @@ import java.util.zip.GZIPOutputStream
 
 /**
  * 本地代理 - 拦截 HTTP 请求，透传 HTTPS 请求
- * HTTP (port 80): 拦截并修改响应
- * HTTPS (port 443): 透传到真实服务器（不修改）
+ * 
+ * 修复说明：
+ * 1. 只处理目标 IP (10.0.0.2) 的流量
+ * 2. HTTP (port 80): 拦截并修改请求/响应
+ * 3. HTTPS (port 443): 通过 ConnectionTracker 直接转发，不经过此代理
  */
 class LocalProxy(private val context: Context) {
 
     companion object {
         private const val TAG = "LocalProxy"
+        private const val REAL_API_HOST = "apis.map.qq.com"
     }
 
     fun intercept(packet: IpPacket, outputStream: FileOutputStream) {
-        val isHttps = packet.destPort == 443
-        val realPort = packet.destPort
+        val destPort = packet.destPort
 
-        val targetSocket = Socket()
-        try {
-            targetSocket.connect(java.net.InetSocketAddress("apis.map.qq.com", realPort), 10000)
-
-            val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
-
-            if (isHttps) {
-                // HTTPS: 直接透传，不修改
-                handlePassthrough(targetSocket, payload, packet, outputStream)
-            } else {
-                // HTTP: 拦截并修改
-                handleHttpIntercept(targetSocket, payload, packet, outputStream)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Intercept error: ${e.message}")
-        } finally {
-            try { targetSocket.close() } catch (_: Exception) {}
+        // 只处理 HTTP (port 80) 的拦截
+        // HTTPS (port 443) 流量由 ConnectionTracker 处理透传
+        if (destPort == 443) {
+            // HTTPS 不应该到这里，但以防万一，直接透传
+            handlePassthrough(packet, outputStream)
+            return
         }
+
+        if (destPort == 80) {
+            handleHttpIntercept(packet, outputStream)
+            return
+        }
+
+        // 其他端口：透传
+        handlePassthrough(packet, outputStream)
     }
 
     private fun handleHttpIntercept(
-        targetSocket: Socket,
-        payload: ByteArray,
         packet: IpPacket,
         outputStream: FileOutputStream
     ) {
+        val targetSocket = Socket()
         try {
+            targetSocket.connect(java.net.InetSocketAddress(REAL_API_HOST, 80), 10000)
+
+            val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
+            if (payload.isEmpty()) return
+
             val requestText = String(payload, Charsets.UTF_8)
             val location = LocationStore.get(context)
 
@@ -75,33 +79,49 @@ class LocalProxy(private val context: Context) {
             }
 
             val tcpResponse = buildTcpResponse(packet, modifiedResponse)
-            outputStream.write(tcpResponse)
+            synchronized(outputStream) {
+                outputStream.write(tcpResponse)
+                outputStream.flush()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "HTTP intercept error: ${e.message}")
+        } finally {
+            try { targetSocket.close() } catch (_: Exception) {}
         }
     }
 
     private fun handlePassthrough(
-        targetSocket: Socket,
-        initialPayload: ByteArray,
         packet: IpPacket,
         outputStream: FileOutputStream
     ) {
+        val targetSocket = Socket()
         try {
-            // 发送初始数据到真实服务器
-            val targetOut = targetSocket.getOutputStream()
-            targetOut.write(initialPayload)
-            targetOut.flush()
+            val destIp = packet.destIp
+            val destPort = packet.destPort
+            targetSocket.connect(java.net.InetSocketAddress(destIp, destPort), 10000)
 
-            // 读取响应
+            val payload = packet.rawData.sliceArray(packet.payloadOffset until packet.rawData.size)
+
+            if (payload.isNotEmpty()) {
+                val targetOut = targetSocket.getOutputStream()
+                targetOut.write(payload)
+                targetOut.flush()
+            }
+
             val targetIn = targetSocket.getInputStream()
             val responseBytes = readRawResponse(targetIn)
 
-            // 构建 TCP 响应并写回 VPN
-            val tcpResponse = buildTcpResponse(packet, responseBytes)
-            outputStream.write(tcpResponse)
+            if (responseBytes.isNotEmpty()) {
+                val tcpResponse = buildTcpResponse(packet, responseBytes)
+                synchronized(outputStream) {
+                    outputStream.write(tcpResponse)
+                    outputStream.flush()
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Passthrough error: ${e.message}")
+        } finally {
+            try { targetSocket.close() } catch (_: Exception) {}
         }
     }
 
@@ -113,7 +133,7 @@ class LocalProxy(private val context: Context) {
                 val read = input.read(buffer)
                 if (read <= 0) break
                 baos.write(buffer, 0, read)
-                if (baos.size() > 65536) break // 安全限制
+                if (baos.size() > 65536) break
             }
         } catch (_: Exception) {}
         return baos.toByteArray()
@@ -276,7 +296,7 @@ class LocalProxy(private val context: Context) {
         tcpHeader[11] = packet.rawData[srcPortOffset + 7]
 
         tcpHeader[12] = 0x50
-        tcpHeader[13] = 0x10 // ACK
+        tcpHeader[13] = 0x18 // PSH + ACK
         tcpHeader[14] = 0xFF.toByte()
         tcpHeader[15] = 0xFF.toByte()
 

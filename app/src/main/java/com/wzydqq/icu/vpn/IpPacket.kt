@@ -18,6 +18,7 @@ class IpPacket(
         const val PROTOCOL_TCP = 6
         const val PROTOCOL_UDP = 17
         const val TARGET_API_HOST = "apis.map.qq.com"
+        const val FAKE_DNS_IP = "10.0.0.2"
 
         fun parse(buffer: ByteBuffer): IpPacket? {
             try {
@@ -75,13 +76,52 @@ class IpPacket(
 
     fun isDnsQuery(): Boolean = protocol == PROTOCOL_UDP && destPort == 53
 
-    // 拦截到 apis.map.qq.com 的 HTTP (80) 和 HTTPS (443)
-    fun isTcpToTarget(): Boolean = protocol == PROTOCOL_TCP && (destPort == 80 || destPort == 443)
+    /**
+     * 只拦截通过 DNS 劫持解析到 10.0.0.2 的 apis.map.qq.com 流量
+     * 不再拦截所有 80/443 端口的 TCP 流量
+     */
+    fun isTcpToTarget(): Boolean = protocol == PROTOCOL_TCP && destIp == FAKE_DNS_IP
 
     fun isTcpSyn(): Boolean {
         if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 14) return false
         val flags = rawData[headerLength + 13].toInt() and 0x3F
-        return (flags and 0x02) != 0 && (flags and 0x10) == 0 // SYN set, ACK not set
+        return (flags and 0x02) != 0 && (flags and 0x10) == 0
+    }
+
+    fun isTcpFin(): Boolean {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 14) return false
+        val flags = rawData[headerLength + 13].toInt() and 0x3F
+        return (flags and 0x01) != 0
+    }
+
+    fun isTcpRst(): Boolean {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 14) return false
+        val flags = rawData[headerLength + 13].toInt() and 0x3F
+        return (flags and 0x04) != 0
+    }
+
+    fun isTcpAck(): Boolean {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 14) return false
+        val flags = rawData[headerLength + 13].toInt() and 0x3F
+        return (flags and 0x10) != 0
+    }
+
+    fun getTcpSequenceNumber(): Long {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 8) return 0
+        val tcpOffset = headerLength
+        return ((rawData[tcpOffset + 4].toLong() and 0xFF) shl 24) or
+                ((rawData[tcpOffset + 5].toLong() and 0xFF) shl 16) or
+                ((rawData[tcpOffset + 6].toLong() and 0xFF) shl 8) or
+                (rawData[tcpOffset + 7].toLong() and 0xFF)
+    }
+
+    fun getTcpAckNumber(): Long {
+        if (protocol != PROTOCOL_TCP || rawData.size < headerLength + 12) return 0
+        val tcpOffset = headerLength
+        return ((rawData[tcpOffset + 8].toLong() and 0xFF) shl 24) or
+                ((rawData[tcpOffset + 9].toLong() and 0xFF) shl 16) or
+                ((rawData[tcpOffset + 10].toLong() and 0xFF) shl 8) or
+                (rawData[tcpOffset + 11].toLong() and 0xFF)
     }
 
     fun extractDnsQuery(): String? {
