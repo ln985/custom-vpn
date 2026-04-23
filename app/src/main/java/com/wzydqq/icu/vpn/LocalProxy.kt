@@ -127,13 +127,17 @@ class LocalProxy(private val context: Context) {
                     if (location.cityName.isNotEmpty()) adInfo.put("city", location.cityName)
                     if (location.districtName.isNotEmpty()) adInfo.put("district", location.districtName)
 
-                    val parts = listOf(
-                        adInfo.optString("nation", "中国"),
-                        location.provinceName,
-                        location.cityName,
-                        location.districtName
-                    ).filter { it.isNotBlank() }
-                    adInfo.put("name", parts.joinToString(","))
+                    val normProvince = normalizeSpecialRegionName(location.provinceName)
+                    val normCity = normalizeSpecialRegionName(location.cityName)
+                    val nameParts = mutableListOf(adInfo.optString("nation", "中国"))
+                    nameParts.add(normProvince)
+                    // 港澳特别行政区：省=市时，跳过城市避免重复
+                    if (!((normProvince == "香港特别行政区" || normProvince == "澳门特别行政区")
+                        && normProvince == normCity)) {
+                        nameParts.add(normCity)
+                    }
+                    nameParts.add(location.districtName.trim())
+                    adInfo.put("name", nameParts.filter { it.isNotBlank() }.joinToString(","))
                 }
             }
 
@@ -257,8 +261,26 @@ class LocalProxy(private val context: Context) {
         return responseIpHeader + tcpPacket
     }
 
+    private fun normalizeSpecialRegionName(name: String): String {
+        val trimmed = name.trim()
+        return when (trimmed) {
+            "香港" -> "香港特别行政区"
+            "澳门" -> "澳门特别行政区"
+            else -> trimmed
+        }
+    }
+
     private fun formatAddress(province: String, city: String, district: String): String {
-        val parts = listOf(province.trim(), city.trim(), district.trim()).filter { it.isNotEmpty() }
+        val normProvince = normalizeSpecialRegionName(province)
+        val normCity = normalizeSpecialRegionName(city)
+        val normDistrict = district.trim()
+        // 港澳特别行政区：省=市时，只显示省+区，避免重复
+        val parts = if ((normProvince == "香港特别行政区" || normProvince == "澳门特别行政区")
+            && normProvince == normCity) {
+            listOf(normProvince, normDistrict).filter { it.isNotEmpty() }
+        } else {
+            listOf(normProvince, normCity, normDistrict).filter { it.isNotEmpty() }
+        }
         return parts.joinToString("")
     }
 }
