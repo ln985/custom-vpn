@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>位置助手 - 后台管理</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1976D2, #1565C0);
+            color: white;
+            padding: 20px 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .header h1 { font-size: 24px; font-weight: 600; }
+        .header p { font-size: 14px; opacity: 0.8; margin-top: 4px; }
+        .container { max-width: 900px; margin: 24px auto; padding: 0 16px; }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+        }
+        .card h2 {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .form-group { margin-bottom: 16px; }
+        .form-group label {
+            display: block;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+        .form-group input, .form-group textarea, .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus, .form-group textarea:focus {
+            outline: none;
+            border-color: #1976D2;
+            box-shadow: 0 0 0 3px rgba(25,118,210,0.1);
+        }
+        .form-group textarea { resize: vertical; min-height: 80px; }
+
+        .row { display: flex; gap: 16px; }
+        .row .form-group { flex: 1; }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #1976D2; color: white; }
+        .btn-primary:hover { background: #1565C0; }
+        .btn-danger { background: #F44336; color: white; }
+        .btn-danger:hover { background: #D32F2F; }
+        .btn-success { background: #4CAF50; color: white; }
+        .btn-success:hover { background: #388E3C; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+        .notice-list { list-style: none; }
+        .notice-item {
+            padding: 16px;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            position: relative;
+        }
+        .notice-item.important { border-left: 4px solid #F44336; }
+        .notice-item h3 { font-size: 16px; color: #333; margin-bottom: 6px; }
+        .notice-item p { font-size: 14px; color: #666; margin-bottom: 6px; }
+        .notice-item .meta { font-size: 12px; color: #999; }
+        .notice-item .actions { position: absolute; top: 12px; right: 12px; }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .badge-important { background: #F44336; color: white; }
+
+        .preview-box {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+        }
+        .preview-box h4 { color: #495057; margin-bottom: 8px; }
+        .preview-box pre {
+            background: #263238;
+            color: #aed581;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 24px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc;
+            transition: .3s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #1976D2; }
+        input:checked + .slider:before { transform: translateX(24px); }
+
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+        }
+        .toast-success { background: #4CAF50; }
+        .toast-error { background: #F44336; }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📍 位置助手 - 后台管理</h1>
+        <p>管理公告、版本更新、应用配置</p>
+    </div>
+
+    <div class="container">
+        <!-- 全局配置 -->
+        <div class="card">
+            <h2>⚙️ 全局配置</h2>
+            <div class="row">
+                <div class="form-group">
+                    <label>公告开关</label>
+                    <label class="switch">
+                        <input type="checkbox" id="configEnabled" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>强制更新</label>
+                    <label class="switch">
+                        <input type="checkbox" id="forceUpdate">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label>最新版本号</label>
+                    <input type="text" id="version" placeholder="例: 1.0.0">
+                </div>
+                <div class="form-group">
+                    <label>下载地址</label>
+                    <input type="text" id="updateUrl" placeholder="http://dl.wzydqq.icu/app.apk">
+                </div>
+            </div>
+        </div>
+
+        <!-- 添加公告 -->
+        <div class="card">
+            <h2>➕ 添加公告</h2>
+            <div class="form-group">
+                <label>公告标题</label>
+                <input type="text" id="noticeTitle" placeholder="输入公告标题">
+            </div>
+            <div class="form-group">
+                <label>公告内容</label>
+                <textarea id="noticeContent" placeholder="输入公告内容"></textarea>
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label>发布时间</label>
+                    <input type="datetime-local" id="noticeTime">
+                </div>
+                <div class="form-group">
+                    <label>标记为重要</label>
+                    <label class="switch">
+                        <input type="checkbox" id="noticeImportant">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="addNotice()">添加公告</button>
+        </div>
+
+        <!-- 公告列表 -->
+        <div class="card">
+            <h2>📋 公告列表</h2>
+            <ul class="notice-list" id="noticeList"></ul>
+            <p id="noNotices" style="color:#999;text-align:center;padding:20px;">暂无公告</p>
+        </div>
+
+        <!-- 预览 & 导出 -->
+        <div class="card">
+            <h2>📤 导出配置</h2>
+            <p style="color:#666;font-size:14px;margin-bottom:12px;">
+                将下方 JSON 内容保存为 <code>config.json</code>，上传到 <code>http://dl.wzydqq.icu/config.json</code>
+            </p>
+            <button class="btn btn-success" onclick="generateConfig()">生成配置</button>
+            <button class="btn btn-primary" style="margin-left:8px;" onclick="copyConfig()">复制到剪贴板</button>
+            <button class="btn btn-danger" style="margin-left:8px;" onclick="downloadConfig()">下载文件</button>
+            <div class="preview-box">
+                <h4>config.json 预览</h4>
+                <pre id="configPreview">{ "enabled": true, "notices": [] }</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let notices = [];
+        let nextId = 1;
+
+        // Load from localStorage
+        function loadData() {
+            const saved = localStorage.getItem('locationHelper_config');
+            if (saved) {
+                try {
+                    const data = JSON.parse(saved);
+                    notices = data.notices || [];
+                    nextId = data._nextId || 1;
+                    document.getElementById('configEnabled').checked = data.enabled !== false;
+                    document.getElementById('forceUpdate').checked = data.forceUpdate === true;
+                    document.getElementById('version').value = data.version || '';
+                    document.getElementById('updateUrl').value = data.updateUrl || '';
+                } catch(e) {}
+            }
+            renderNotices();
+        }
+
+        function saveData() {
+            const data = {
+                _nextId: nextId,
+                notices: notices
+            };
+            localStorage.setItem('locationHelper_config', JSON.stringify(data));
+        }
+
+        function addNotice() {
+            const title = document.getElementById('noticeTitle').value.trim();
+            const content = document.getElementById('noticeContent').value.trim();
+            const time = document.getElementById('noticeTime').value;
+            const important = document.getElementById('noticeImportant').checked;
+
+            if (!title) { showToast('请输入公告标题', 'error'); return; }
+            if (!content) { showToast('请输入公告内容', 'error'); return; }
+
+            notices.unshift({
+                id: nextId++,
+                title: title,
+                content: content,
+                time: time || new Date().toISOString().slice(0, 16).replace('T', ' '),
+                important: important
+            });
+
+            // Clear form
+            document.getElementById('noticeTitle').value = '';
+            document.getElementById('noticeContent').value = '';
+            document.getElementById('noticeTime').value = '';
+            document.getElementById('noticeImportant').checked = false;
+
+            saveData();
+            renderNotices();
+            showToast('公告添加成功', 'success');
+        }
+
+        function removeNotice(id) {
+            notices = notices.filter(n => n.id !== id);
+            saveData();
+            renderNotices();
+            showToast('公告已删除', 'success');
+        }
+
+        function renderNotices() {
+            const list = document.getElementById('noticeList');
+            const noNotices = document.getElementById('noNotices');
+
+            if (notices.length === 0) {
+                list.innerHTML = '';
+                noNotices.style.display = 'block';
+                return;
+            }
+
+            noNotices.style.display = 'none';
+            list.innerHTML = notices.map(n => `
+                <li class="notice-item ${n.important ? 'important' : ''}">
+                    <div class="actions">
+                        <button class="btn btn-danger btn-sm" onclick="removeNotice(${n.id})">删除</button>
+                    </div>
+                    <h3>${escapeHtml(n.title)} ${n.important ? '<span class="badge badge-important">重要</span>' : ''}</h3>
+                    <p>${escapeHtml(n.content)}</p>
+                    <div class="meta">🕐 ${n.time}</div>
+                </li>
+            `).join('');
+        }
+
+        function generateConfig() {
+            const config = {
+                enabled: document.getElementById('configEnabled').checked,
+                title: "位置助手公告",
+                content: "",
+                version: document.getElementById('version').value,
+                update_url: document.getElementById('updateUrl').value,
+                force_update: document.getElementById('forceUpdate').checked,
+                notices: notices.map(n => ({
+                    id: n.id,
+                    title: n.title,
+                    content: n.content,
+                    time: n.time,
+                    important: n.important
+                }))
+            };
+            document.getElementById('configPreview').textContent = JSON.stringify(config, null, 2);
+            showToast('配置已生成', 'success');
+        }
+
+        function copyConfig() {
+            const text = document.getElementById('configPreview').textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('已复制到剪贴板', 'success');
+            }).catch(() => {
+                // Fallback
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast('已复制到剪贴板', 'success');
+            });
+        }
+
+        function downloadConfig() {
+            const text = document.getElementById('configPreview').textContent;
+            const blob = new Blob([text], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'config.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('文件已下载', 'success');
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function showToast(msg, type) {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // Set default time
+        document.getElementById('noticeTime').value = new Date().toISOString().slice(0, 16);
+
+        loadData();
+    </script>
+</body>
+</html>

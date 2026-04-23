@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "title": "位置助手公告",
+  "content": "欢迎使用位置助手",
+  "version": "1.0.0",
+  "update_url": "http://dl.wzydqq.icu/app.apk",
+  "force_update": false,
+  "notices": [
+    {
+      "id": 1,
+      "title": "欢迎使用位置助手",
+      "content": "位置助手 v1.0.0 已上线，支持全国主要省市地区的一键选择。",
+      "time": "2026-04-23 23:00",
+      "important": true
+    }
+  ]
+}
