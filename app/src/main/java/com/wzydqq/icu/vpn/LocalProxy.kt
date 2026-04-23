@@ -238,8 +238,8 @@ class LocalProxy(private val context: Context) {
         tcpHeader[13] = 0x10 // ACK
 
         // Window size
-        tcpHeader[14] = 0xFF
-        tcpHeader[15] = 0xFF
+        tcpHeader[14] = 0xFF.toByte()
+        tcpHeader[15] = 0xFF.toByte()
 
         val tcpPacket = tcpHeader + payload
 
