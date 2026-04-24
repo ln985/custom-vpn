@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -32,15 +33,28 @@
         <activity
             android:name=".ui.AnnouncementActivity" />
 
+        <!-- NetBare VPN 服务 -->
         <service
             android:name=".vpn.LocationVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:foregroundServiceType="specialUse"
-            android:exported="false">
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
+                <action android:name="com.github.megatronking.netbare.action.Start" />
+                <action android:name="com.github.megatronking.netbare.action.Stop" />
             </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn_traffic_inspect" />
         </service>
+
+        <!-- NetBare 证书安装 Activity -->
+        <activity
+            android:name="com.github.megatronking.netbare.ssl.CertificateInstallActivity"
+            android:exported="false"
+            android:theme="@style/NetBare"
+            android:excludeFromRecents="true" />
 
     </application>
 

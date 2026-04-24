@@ -8,10 +8,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.wzydqq.icu.AnnouncementManager
-import android.net.VpnService
+import com.wzydqq.icu.App
 import com.wzydqq.icu.databinding.ActivityMainBinding
 import com.wzydqq.icu.location.LocationStore
 import com.wzydqq.icu.vpn.LocationVpnService
+import com.github.megatronking.netbare.NetBare
+import com.github.megatronking.netbare.ssl.JKS
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -62,12 +64,7 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
-                val vpnIntent = VpnService.prepare(this)
-                if (vpnIntent != null) {
-                    vpnPermissionLauncher.launch(vpnIntent)
-                } else {
-                    startVpnService()
-                }
+                prepareNetBare()
             }
         }
 
@@ -82,6 +79,30 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnAnnouncement.setOnClickListener {
             startActivity(Intent(this, AnnouncementActivity::class.java))
+        }
+    }
+
+    /**
+     * 准备 NetBare：检查证书 -> VPN 权限 -> 启动
+     */
+    private fun prepareNetBare() {
+        // 1. 检查并安装自签证书
+        if (!JKS.isInstalled(this, App.JSK_ALIAS)) {
+            try {
+                JKS.install(this, App.JSK_ALIAS, App.JSK_PASSWORD)
+                Toast.makeText(this, "请安装证书后重试", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "证书安装失败: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        // 2. 检查 VPN 权限
+        val vpnIntent = NetBare.get().prepare()
+        if (vpnIntent != null) {
+            vpnPermissionLauncher.launch(vpnIntent)
+        } else {
+            startVpnService()
         }
     }
 

@@ -1,1 +1,2 @@
 -keep class com.wzydqq.icu.** { *; }
+-keep class com.github.megatronking.netbare.** { *; }
